@@ -537,12 +537,17 @@ router.get('/transactions', async (req, res) => {
   }
 });
 
-// ==================== PROFILE - FIXED ====================
+// ==================== PROFILE ====================
 router.get('/profile', async (req, res) => {
   try {
     const userId = req.session.userId;
+    
+    // Get user data from database
     const user = await db.get(
-      'SELECT id, first_name, last_name, email, balance, currency, created_at, phone, dob, address, address2, city, state, postal_code, country, kyc_status, referral_code FROM users WHERE id = $1',
+      `SELECT id, first_name, last_name, email, balance, currency, 
+              phone, dob, address, address2, city, state, postal_code, 
+              country, kyc_status, referral_code, created_at 
+       FROM users WHERE id = $1`,
       [userId]
     );
     
@@ -551,7 +556,13 @@ router.get('/profile', async (req, res) => {
       return res.redirect('/dashboard');
     }
     
-    res.render('dashboard/profile', { title: 'Profile', user: user });
+    // Render the profile page - NOT redirect!
+    res.render('dashboard/profile', { 
+      title: 'My Profile', 
+      user: user,
+      messages: req.flash()
+    });
+    
   } catch (error) {
     console.error('Profile error:', error);
     req.flash('error', 'Error loading profile: ' + error.message);
