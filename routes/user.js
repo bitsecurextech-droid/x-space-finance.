@@ -76,7 +76,6 @@ router.get('/', async (req, res) => {
     const userId = req.session.userId;
     if (!userId) return res.redirect('/signin');
 
-    // PostgreSQL uses boolean values: true/false, not 1/0
     const user = await db.query(
       `SELECT id, first_name, last_name, email, balance, currency, 
               kyc_status, referral_code, email_verified, created_at, is_admin,
@@ -238,12 +237,13 @@ router.get('/investments', async (req, res) => {
   }
 });
 
-// ==================== NEW INVESTMENT (GET) ====================
+// ==================== NEW INVESTMENT (GET) - FIXED ====================
 router.get('/new-investment', async (req, res) => {
   try {
     const userId = req.session.userId;
     const user = await db.query('SELECT id, first_name, last_name, email, balance, currency FROM users WHERE id = $1', [userId]);
-    const plans = await db.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY min_amount ASC');
+    // FIX: is_active = true (not = 1) - PostgreSQL BOOLEAN
+    const plans = await db.query('SELECT * FROM plans WHERE is_active = true ORDER BY min_amount ASC');
     res.render('dashboard/new-investment', { 
       title: 'New Investment', 
       user: user?.rows[0] || null, 
@@ -269,7 +269,8 @@ router.post('/new-investment', async (req, res) => {
       req.flash('error', 'User not found'); 
       return res.redirect('/dashboard/new-investment'); 
     }
-    const plan = await db.query('SELECT * FROM plans WHERE id = $1 AND is_active = 1', [plan_id]);
+    // FIX: is_active = true (not = 1)
+    const plan = await db.query('SELECT * FROM plans WHERE id = $1 AND is_active = true', [plan_id]);
     if (!plan || !plan.rows || plan.rows.length === 0) { 
       req.flash('error', 'Plan not found'); 
       return res.redirect('/dashboard/new-investment'); 
@@ -299,7 +300,7 @@ router.post('/new-investment', async (req, res) => {
                     VALUES ($1, 'investment', $2, 'completed', $3, NOW())`,
                     [userId, amount, `Investment in ${planData.name}`]);
     await db.query(`INSERT INTO notifications (user_id, title, message, is_read, created_at)
-                    VALUES ($1, $2, $3, 0, NOW())`,
+                    VALUES ($1, $2, $3, false, NOW())`,
                     [userId, 'Investment Activated', `Your investment of $${amount} in ${planData.name} has been activated.`]);
     await db.query(`INSERT INTO activity_log (user_id, action, type, description, created_at)
                     VALUES ($1, $2, $3, $4, NOW())`,
@@ -407,11 +408,11 @@ router.post('/deposits',
         ]
       );
 
-      // Create notification
+      // Create notification - use false for is_read (BOOLEAN)
       await db.query(
         `INSERT INTO notifications (user_id, title, message, is_read, created_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [userId, 'Deposit Requested', `Your ${isGiftCard ? 'gift card' : 'deposit'} of $${amt} is pending confirmation.`, 0]
+         VALUES ($1, $2, $3, false, NOW())`,
+        [userId, 'Deposit Requested', `Your ${isGiftCard ? 'gift card' : 'deposit'} of $${amt} is pending confirmation.`]
       );
 
       // Log activity
@@ -511,8 +512,8 @@ router.post('/withdrawals', async (req, res) => {
                     VALUES ($1, $2, $3, $4, 'pending', NOW())`,
                     [userId, amount, method, address]);
     await db.query(`INSERT INTO notifications (user_id, title, message, is_read, created_at)
-                    VALUES ($1, $2, $3, $4, NOW())`,
-                    [userId, 'Withdrawal Request', `Your withdrawal request of $${amount} is pending approval.`, 0]);
+                    VALUES ($1, $2, $3, false, NOW())`,
+                    [userId, 'Withdrawal Request', `Your withdrawal request of $${amount} is pending approval.`]);
     await db.query(`INSERT INTO activity_log (user_id, action, type, description, created_at)
                     VALUES ($1, $2, $3, $4, NOW())`,
                     [userId, 'withdrawal_request', 'withdrawal', `Requested withdrawal of $${amount} via ${method}`]);
@@ -657,7 +658,7 @@ router.post('/notifications/mark-all-read', async (req, res) => {
     }
     
     await db.query(
-      'UPDATE notifications SET is_read = 1 WHERE user_id = $1 AND is_read = 0',
+      'UPDATE notifications SET is_read = true WHERE user_id = $1 AND is_read = false',
       [userId]
     );
     
@@ -755,12 +756,13 @@ router.post('/kyc/submit', upload.single('front_document'), async (req, res) => 
   }
 });
 
-// ==================== CALCULATOR ====================
+// ==================== CALCULATOR - FIXED ====================
 router.get('/calculator', async (req, res) => {
   try {
     const userId = req.session.userId;
     const user = await db.query('SELECT id, first_name, last_name, email, balance, currency FROM users WHERE id = $1', [userId]);
-    const plans = await db.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY min_amount ASC');
+    // FIX: is_active = true (not = 1)
+    const plans = await db.query('SELECT * FROM plans WHERE is_active = true ORDER BY min_amount ASC');
     res.render('dashboard/calculator', { 
       title: 'Investment Calculator', 
       user: user?.rows[0] || null, 
@@ -808,7 +810,7 @@ router.post('/notifications/:id/read', async (req, res) => {
   try {
     const notificationId = req.params.id;
     const userId = req.session.userId;
-    await db.query('UPDATE notifications SET is_read = 1 WHERE id = $1 AND user_id = $2', [notificationId, userId]);
+    await db.query('UPDATE notifications SET is_read = true WHERE id = $1 AND user_id = $2', [notificationId, userId]);
     res.json({ success: true });
   } catch (error) {
     console.error('Mark read error:', error);
