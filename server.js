@@ -9,6 +9,16 @@ const helmet = require('helmet');
 const flash = require('connect-flash');
 const db = require('./config/database');
 
+// Add realized column if missing (temporary fix)
+(async () => {
+  try {
+    await db.run('ALTER TABLE users ADD COLUMN realized DECIMAL(15,2) DEFAULT 0');
+    console.log('✅ Realized column added');
+  } catch (e) {
+    // Ignore if already exists
+  }
+})();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
