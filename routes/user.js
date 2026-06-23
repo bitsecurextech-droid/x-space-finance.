@@ -20,17 +20,47 @@ const kycStorage = multer.diskStorage({
 });
 const upload = multer({ storage: kycStorage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Deposit proofs
+// ===== UPDATED DEPOSIT MULTER CONFIG =====
+// Support both proof and gift_card_file uploads
 const depositUploadDir = 'public/uploads/deposits';
+const giftcardUploadDir = 'public/uploads/giftcards';
+
+// Create directories if they don't exist
 if (!fs.existsSync(depositUploadDir)) fs.mkdirSync(depositUploadDir, { recursive: true });
+if (!fs.existsSync(giftcardUploadDir)) fs.mkdirSync(giftcardUploadDir, { recursive: true });
+
 const depositStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, depositUploadDir),
-  filename: (req, file, cb) => {
+  destination: function (req, file, cb) {
+    // Route to different folders based on field name
+    if (file.fieldname === 'gift_card_file') {
+      cb(null, giftcardUploadDir);
+    } else {
+      cb(null, depositUploadDir);
+    }
+  },
+  filename: function (req, file, cb) {
     const unique = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'deposit-' + unique + path.extname(file.originalname));
+    const prefix = file.fieldname === 'gift_card_file' ? 'giftcard-' : 'deposit-';
+    cb(null, prefix + unique + path.extname(file.originalname));
   }
 });
-const depositUpload = multer({ storage: depositStorage, limits: { fileSize: 5 * 1024 * 1024 } });
+
+// File filter for validation
+const depositFileFilter = function (req, file, cb) {
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only JPG, PNG, and PDF files are allowed'), false);
+  }
+};
+
+// Create multer instance with multiple field support
+const depositUpload = multer({
+  storage: depositStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: depositFileFilter
+});
 
 // ==================== MIDDLEWARE ====================
 router.use((req, res, next) => {
@@ -274,7 +304,7 @@ router.get('/active-plans', async (req, res) => {
   }
 });
 
-// ==================== DEPOSITS ====================
+// ==================== DEPOSITS (GET) ====================
 router.get('/deposits', async (req, res) => {
   try {
     const userId = req.session.userId;
@@ -288,34 +318,119 @@ router.get('/deposits', async (req, res) => {
   }
 });
 
-router.post('/deposits', depositUpload.single('proof'), async (req, res) => {
-  try {
-    const userId = req.session.userId;
-    const { amount, method, notes } = req.body;
-    const proofPath = req.file ? req.file.filename : null;
+// ==================== DEPOSITS (POST) - UPDATED ====================
+router.post('/deposits', 
+  depositUpload.fields([
+    { name: 'proof', maxCount: 1 },
+    { name: 'gift_card_file', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      const userId = req.session.userId;
+      const { amount, method, notes, gift_card_code, crypto_address, deposit_type } = req.body;
+      
+      // Check if files were uploaded
+      console.log('Files received:', req.files);
+      console.log('Body received:', req.body);
 
-    const amt = parseFloat(amount);
-    if (!amt || amt <= 0) {
-      req.flash('error', 'Please enter a valid amount');
-      return res.redirect('/dashboard/deposits');
+      const amt = parseFloat(amount);
+      if (!amt || amt <= 0) {
+        req.flash('error', 'Please enter a valid amount');
+        return res.redirect('/dashboard/deposits');
+      }
+
+      // Prepare file paths
+      let proofFile = null;
+      let giftCardFile = null;
+      
+      if (req.files) {
+        if (req.files.proof && req.files.proof[0]) {
+          proofFile = req.files.proof[0].filename;
+        }
+        if (req.files.gift_card_file && req.files.gift_card_file[0]) {
+          giftCardFile = req.files.gift_card_file[0].filename;
+        }
+      }
+
+      // Insert deposit with all fields
+      await db.run(
+        `INSERT INTO deposits 
+         (user_id, amount, method, proof_path, gift_card_code, gift_card_file, 
+          deposit_type, notes, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
+        [
+          userId, 
+          amt, 
+          method || 'bank_transfer', 
+          proofFile, 
+          gift_card_code || null,
+          giftCardFile,
+          deposit_type || 'deposit',
+          notes || ''
+        ]
+      );
+
+      // Create notification
+      await db.run(
+        `INSERT INTO notifications (user_id, title, message, is_read, created_at)
+         VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)`,
+        [userId, 'Deposit Requested', `Your deposit of $${amt} is pending confirmation.`]
+      );
+
+      // Log activity
+      await db.run(
+        `INSERT INTO activity_log (user_id, action, type, description, created_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        [userId, 'deposit_request', 'deposit', `Requested deposit of $${amt} via ${method || 'bank_transfer'}`]
+      );
+
+      req.flash('success', 'Deposit request submitted successfully!');
+      res.redirect('/dashboard/deposits');
+
+    } catch (error) {
+      console.error('Deposit error:', error);
+      
+      // Clean up uploaded files if database insert fails
+      if (req.files) {
+        Object.keys(req.files).forEach(key => {
+          req.files[key].forEach(file => {
+            fs.unlink(file.path, (err) => {
+              if (err) console.error('Error deleting file:', err);
+            });
+          });
+        });
+      }
+      
+      req.flash('error', 'Failed to submit deposit: ' + error.message);
+      res.redirect('/dashboard/deposits');
     }
-
-    await db.run(`INSERT INTO deposits (user_id, amount, method, proof_path, notes, status, created_at)
-                  VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
-                  [userId, amt, method || 'bank_transfer', proofPath, notes]);
-    await db.run(`INSERT INTO notifications (user_id, title, message, is_read, created_at)
-                  VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)`,
-                  [userId, 'Deposit Requested', `Your deposit of $${amt} is pending confirmation.`]);
-    await db.run(`INSERT INTO activity_log (user_id, action, type, description, created_at)
-                  VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                  [userId, 'deposit_request', 'deposit', `Requested deposit of $${amt} via ${method || 'bank_transfer'}`]);
-    req.flash('success', 'Deposit request submitted successfully!');
-    res.redirect('/dashboard/deposits');
-  } catch (error) {
-    console.error('Deposit error:', error);
-    req.flash('error', 'Failed to submit deposit: ' + error.message);
-    res.redirect('/dashboard/deposits');
   }
+);
+
+// ===== MULTER ERROR HANDLING =====
+router.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    console.error('Multer error:', err);
+    
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      req.flash('error', 'File is too large. Maximum size is 5MB.');
+    } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      req.flash('error', 'Unexpected file field. Please use the correct upload field.');
+    } else if (err.code === 'LIMIT_FILE_COUNT') {
+      req.flash('error', 'Too many files. Only one file per field is allowed.');
+    } else {
+      req.flash('error', 'File upload error: ' + err.message);
+    }
+    return res.redirect('/dashboard/deposits');
+  }
+  
+  if (err) {
+    console.error('General error:', err);
+    req.flash('error', err.message || 'Something went wrong.');
+    return res.redirect('/dashboard/deposits');
+  }
+  
+  next();
 });
 
 // ==================== WITHDRAWALS ====================
