@@ -76,6 +76,7 @@ router.get('/', async (req, res) => {
     const userId = req.session.userId;
     if (!userId) return res.redirect('/signin');
 
+    // PostgreSQL uses boolean values: true/false, not 1/0
     const user = await db.query(
       `SELECT id, first_name, last_name, email, balance, currency, 
               kyc_status, referral_code, email_verified, created_at, is_admin,
@@ -167,7 +168,7 @@ router.get('/', async (req, res) => {
     // --- Pending counts (for sidebar badges) ---
     const pendingDeposits = await db.query(`SELECT COUNT(*) as count FROM deposits WHERE user_id = $1 AND status = 'pending'`, [userId]);
     const pendingWithdrawals = await db.query(`SELECT COUNT(*) as count FROM withdrawals WHERE user_id = $1 AND status = 'pending'`, [userId]);
-    const unreadCount = await db.query('SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = 0', [userId]);
+    const unreadCount = await db.query('SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = false', [userId]);
 
     res.render('dashboard/index', {
       title: 'Dashboard',
