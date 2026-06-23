@@ -75,6 +75,9 @@
           <input type="number" step="0.01" name="roi_percent" id="createRoi" placeholder="Monthly ROI %" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" oninput="calculateCreate()" required>
           <input type="number" name="min_amount" id="createMin" placeholder="Min Amount" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" oninput="calculateCreate()" required>
           <input type="number" name="max_amount" placeholder="Max Amount" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" required>
+          
+          <!-- Hidden field to set duration_days automatically -->
+          <input type="hidden" name="duration_days" id="createDays">
 
           <!-- Projection display -->
           <div class="bg-slate-700/50 rounded-lg p-3 text-center">
@@ -107,6 +110,9 @@
           <input type="number" step="0.01" name="roi_percent" id="editRoi" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" oninput="calculateEdit()" required>
           <input type="number" name="min_amount" id="editMin" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" oninput="calculateEdit()" required>
           <input type="number" name="max_amount" id="editMax" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2" required>
+          
+          <!-- Hidden field to set duration_days automatically -->
+          <input type="hidden" name="duration_days" id="editDays">
 
           <!-- Projection display -->
           <div class="bg-slate-700/50 rounded-lg p-3 text-center">
@@ -146,6 +152,8 @@
       document.getElementById('editMin').value = p.min_amount;
       document.getElementById('editMax').value = p.max_amount;
       document.getElementById('editActive').checked = p.is_active === 1;
+      // Set duration_days for edit
+      document.getElementById('editDays').value = (p.duration_months || 1) * 30;
       document.getElementById('editModal').classList.remove('hidden');
       calculateEdit();
     }
@@ -158,6 +166,8 @@
       const total = amount * Math.pow(1 + roi / 100, months);
       document.getElementById('createMaturity').textContent = '$' + total.toFixed(2);
       document.getElementById('createProfit').textContent = '+$' + (total - amount).toFixed(2);
+      // Set duration_days hidden field
+      document.getElementById('createDays').value = months * 30;
     }
 
     // ===== Calculator for Edit =====
@@ -168,6 +178,8 @@
       const total = amount * Math.pow(1 + roi / 100, months);
       document.getElementById('editMaturity').textContent = '$' + total.toFixed(2);
       document.getElementById('editProfit').textContent = '+$' + (total - amount).toFixed(2);
+      // Set duration_days hidden field
+      document.getElementById('editDays').value = months * 30;
     }
 
     // Initial calculation on load
