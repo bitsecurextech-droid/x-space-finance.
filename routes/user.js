@@ -542,7 +542,6 @@ router.get('/profile', async (req, res) => {
   try {
     const userId = req.session.userId;
     
-    // Get user data from database
     const user = await db.get(
       `SELECT id, first_name, last_name, email, balance, currency, 
               phone, dob, address, address2, city, state, postal_code, 
@@ -556,13 +555,19 @@ router.get('/profile', async (req, res) => {
       return res.redirect('/dashboard');
     }
     
-    // Render the profile page - NOT redirect!
+    // ✅ RENDER the profile page - NOT redirect!
     res.render('dashboard/profile', { 
       title: 'My Profile', 
       user: user,
       messages: req.flash()
     });
     
+  } catch (error) {
+    console.error('Profile error:', error);
+    req.flash('error', 'Error loading profile: ' + error.message);
+    res.redirect('/dashboard');
+  }
+});    
   } catch (error) {
     console.error('Profile error:', error);
     req.flash('error', 'Error loading profile: ' + error.message);
