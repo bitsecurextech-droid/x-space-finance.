@@ -9,13 +9,113 @@ const helmet = require('helmet');
 const flash = require('connect-flash');
 const db = require('./config/database');
 
-// Add realized column if missing (temporary fix)
+// ==================== DATABASE MIGRATIONS ====================
 (async () => {
   try {
-    await db.run('ALTER TABLE users ADD COLUMN realized DECIMAL(15,2) DEFAULT 0');
-    console.log('✅ Realized column added');
-  } catch (e) {
-    // Ignore if already exists
+    // Add missing columns to users table
+    const columns = [
+      { name: 'realized', type: 'DECIMAL(15,2) DEFAULT 0' },
+      { name: 'kyc_doc', type: 'TEXT' },
+      { name: 'reset_token', type: 'TEXT' },
+      { name: 'reset_token_expiry', type: 'TIMESTAMP' },
+      { name: 'email_verify_token', type: 'TEXT' },
+      { name: 'last_login', type: 'TIMESTAMP' },
+      { name: 'is_banned', type: 'INTEGER DEFAULT 0' },
+      { name: 'email_verified', type: 'INTEGER DEFAULT 0' }
+    ];
+    
+    for (const col of columns) {
+      try {
+        await db.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+        console.log(`✅ Added column: ${col.name}`);
+      } catch (e) {
+        // Ignore if column already exists
+        if (e.message && (e.message.includes('already exists') || e.message.includes('42701'))) {
+          // Column already exists - do nothing
+        } else {
+          console.log(`⚠️ Could not add ${col.name}: ${e.message}`);
+        }
+      }
+    }
+
+    // Add missing columns to deposits table
+    const depositColumns = [
+      { name: 'proof_path', type: 'TEXT' },
+      { name: 'gift_card_code', type: 'TEXT' },
+      { name: 'gift_card_file', type: 'TEXT' },
+      { name: 'deposit_type', type: 'TEXT DEFAULT \'deposit\'' },
+      { name: 'tx_hash', type: 'TEXT' },
+      { name: 'processed_at', type: 'TIMESTAMP' }
+    ];
+    
+    for (const col of depositColumns) {
+      try {
+        await db.query(`ALTER TABLE deposits ADD COLUMN ${col.name} ${col.type}`);
+        console.log(`✅ Added column to deposits: ${col.name}`);
+      } catch (e) {
+        // Ignore if column already exists
+        if (e.message && (e.message.includes('already exists') || e.message.includes('42701'))) {
+          // Column already exists - do nothing
+        } else {
+          console.log(`⚠️ Could not add ${col.name} to deposits: ${e.message}`);
+        }
+      }
+    }
+
+    // Create activity_log table if it doesn't exist
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS activity_log (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          action TEXT,
+          type TEXT,
+          description TEXT,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      console.log('✅ Activity_log table ready');
+    } catch (e) {
+      console.log('⚠️ Activity_log table check:', e.message);
+    }
+
+    // Create chat_messages table if it doesn't exist
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          message TEXT,
+          is_admin INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      console.log('✅ Chat_messages table ready');
+    } catch (e) {
+      console.log('⚠️ Chat_messages table check:', e.message);
+    }
+
+    // Create gift_card_submissions table if it doesn't exist
+    try {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS gift_card_submissions (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          deposit_id INTEGER,
+          code TEXT,
+          file_path TEXT,
+          status TEXT DEFAULT 'pending',
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      console.log('✅ Gift_card_submissions table ready');
+    } catch (e) {
+      console.log('⚠️ Gift_card_submissions table check:', e.message);
+    }
+
+    console.log('✅ Database migrations completed');
+  } catch (error) {
+    console.error('❌ Migration error:', error);
   }
 })();
 
@@ -37,7 +137,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Ensure upload directories exist
 const fs = require('fs');
-const uploadDirs = ['public/uploads', 'public/uploads/deposits', 'public/uploads/kyc'];
+const uploadDirs = [
+  'public/uploads',
+  'public/uploads/deposits',
+  'public/uploads/giftcards',
+  'public/uploads/kyc'
+];
 uploadDirs.forEach(dir => {
   const fullPath = path.join(__dirname, dir);
   if (!fs.existsSync(fullPath)) fs.mkdirSync(fullPath, { recursive: true });
@@ -63,7 +168,7 @@ app.use(session({
 
 app.use(flash());
 
-// --- Global user middleware ---
+// --- Global user middleware - FIXED PostgreSQL syntax ---
 app.use(async (req, res, next) => {
   res.locals.isLoggedIn = false;
   res.locals.user = null;
@@ -72,18 +177,31 @@ app.use(async (req, res, next) => {
 
   if (req.session && req.session.userId) {
     try {
+      // PostgreSQL uses $1 instead of ?
       const user = await db.get(
-        'SELECT id, first_name, last_name, email, balance, currency, is_admin, kyc_status, referral_code FROM users WHERE id = ?',
+        'SELECT id, first_name, last_name, email, balance, currency, is_admin, kyc_status, referral_code, is_banned, email_verified FROM users WHERE id = $1',
         [req.session.userId]
       );
+      
       if (user) {
+        // Check if user is banned
+        if (user.is_banned === 1) {
+          // User is banned - destroy session
+          req.session.destroy();
+          return res.redirect('/signin?banned=true');
+        }
+        
         res.locals.user = user;
         res.locals.isLoggedIn = true;
-        // ✅ convert to boolean for PostgreSQL compatibility
-        res.locals.isAdmin = user.is_admin === 1 || user.is_admin === true;
+        // is_admin is INTEGER (0 or 1) in PostgreSQL
+        res.locals.isAdmin = user.is_admin === 1;
+        
+        // Also set req.user for convenience
+        req.user = user;
       }
     } catch (error) {
       console.error('Session user error:', error);
+      // Don't crash on session error
     }
   }
   next();
@@ -93,10 +211,19 @@ app.use(async (req, res, next) => {
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
+// Public routes (home, about, plans, etc.)
 app.use('/', publicRoutes);
+
+// Auth routes (signin, register, logout, etc.)
 app.use('/', authRoutes);
+
+// API routes
 app.use('/api', apiRoutes);
+
+// User routes (dashboard, deposits, investments, etc.)
 app.use('/dashboard', userRoutes);
+
+// Admin routes (admin panel)
 app.use('/admin', adminRoutes);
 
 // --- Error handling ---
@@ -108,8 +235,12 @@ app.use((err, req, res, next) => {
   });
 });
 
+// --- 404 handler ---
 app.use((req, res) => {
-  res.status(404).render('error', { message: 'Page not found', error: { status: 404 } });
+  res.status(404).render('error', { 
+    message: 'Page not found', 
+    error: { status: 404 } 
+  });
 });
 
 // --- Start server ---
@@ -137,5 +268,11 @@ app.locals.formatCurrency = function(amount, currency) {
 };
 
 // --- Graceful shutdown ---
-process.on('SIGINT', () => { console.log('🛑 Shutting down...'); process.exit(0); });
-process.on('SIGTERM', () => { console.log('🛑 Shutting down...'); process.exit(0); });
+process.on('SIGINT', () => { 
+  console.log('🛑 Shutting down...'); 
+  process.exit(0); 
+});
+process.on('SIGTERM', () => { 
+  console.log('🛑 Shutting down...'); 
+  process.exit(0); 
+});
