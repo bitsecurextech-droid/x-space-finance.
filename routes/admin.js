@@ -40,7 +40,6 @@ router.get('/', async (req, res) => {
     const recentUsers = await db.all('SELECT id, first_name, last_name, email, balance, created_at, kyc_status, is_banned FROM users ORDER BY created_at DESC LIMIT 10');
     const recentDeposits = await db.all('SELECT d.*, u.first_name, u.last_name FROM deposits d JOIN users u ON d.user_id = u.id ORDER BY d.created_at DESC LIMIT 10');
     
-    // Ensure numbers are numbers
     recentUsers.forEach(user => {
       user.balance = parseFloat(user.balance) || 0;
     });
@@ -74,7 +73,6 @@ router.get('/users', async (req, res) => {
     const adminUser = await db.get('SELECT id, first_name, last_name, email, is_admin FROM users WHERE id = $1', [req.session.userId]);
     const users = await db.all('SELECT id, first_name, last_name, email, balance, currency, kyc_status, is_admin, is_banned, created_at FROM users ORDER BY created_at DESC');
     
-    // Ensure balance is a number for each user
     users.forEach(user => {
       user.balance = parseFloat(user.balance) || 0;
     });
@@ -103,7 +101,6 @@ router.get('/user/:id', async (req, res) => {
       return res.redirect('/admin/users');
     }
     
-    // Ensure numbers are actually numbers (Prevent toFixed errors)
     targetUser.realized = parseFloat(targetUser.realized) || 0;
     targetUser.balance = parseFloat(targetUser.balance) || 0;
     
@@ -418,7 +415,7 @@ router.get('/user/:id/export-transactions', async (req, res) => {
     const transactions = await db.all('SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC', [req.params.id]);
     let csv = 'Date,Type,Amount,Balance After,Description\n';
     transactions.forEach(t => { 
-      csv += `${t.created_at},${t.type},${t.amount},${t.balance_after},"${t.description || ''}"\n`; 
+      csv += `${t.created_at},${t.type},${t.amount},${t.balance_after || ''},"${t.description || ''}"\n`; 
     });
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename=user_${req.params.id}_transactions.csv`);
@@ -446,31 +443,80 @@ router.get('/deposits', async (req, res) => {
   }
 });
 
+// ==================== DEPOSIT APPROVE - FIXED ====================
 router.post('/deposit/:id/approve', async (req, res) => {
   try {
     const depositId = req.params.id;
     const deposit = await db.get('SELECT * FROM deposits WHERE id = $1', [depositId]);
+    
+    if (!deposit) {
+      req.flash('error', 'Deposit not found');
+      return res.redirect('/admin/deposits');
+    }
+    
     if (deposit.status !== 'pending') {
       req.flash('error', 'Deposit already processed');
       return res.redirect('/admin/deposits');
     }
+    
     const user = await db.get('SELECT balance FROM users WHERE id = $1', [deposit.user_id]);
-    const newBalance = (parseFloat(user.balance) || 0) + parseFloat(deposit.amount);
+    const currentBalance = parseFloat(user.balance) || 0;
+    const newBalance = currentBalance + parseFloat(deposit.amount);
     
     await db.query('BEGIN');
-    await db.query('UPDATE deposits SET status = $1, processed_at = NOW() WHERE id = $2', ['approved', depositId]);
-    await db.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, deposit.user_id]);
-    await db.query('INSERT INTO transactions (user_id, type, amount, balance_after, description, created_at) VALUES ($1, $2, $3, $4, $5, NOW())', [deposit.user_id, 'deposit', deposit.amount, newBalance, 'Deposit approved']);
     
+    // Update deposit status
     await db.query(
-      `INSERT INTO notifications (user_id, title, message, is_read, type, created_at)
-       VALUES ($1, 'Deposit Approved', $2, false, 'deposit', NOW())`,
-      [deposit.user_id, `Your deposit of $${deposit.amount} has been approved and credited to your wallet.`]
+      'UPDATE deposits SET status = $1, processed_at = NOW() WHERE id = $2',
+      ['approved', depositId]
     );
     
+    // Update user balance
+    await db.query(
+      'UPDATE users SET balance = $1 WHERE id = $2',
+      [newBalance, deposit.user_id]
+    );
+    
+    // Insert transaction with balance_after
+    await db.query(`
+      INSERT INTO transactions 
+      (user_id, type, amount, balance_after, description, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `, [
+      deposit.user_id,
+      'deposit',
+      deposit.amount,
+      newBalance,
+      `Deposit approved - $${deposit.amount} credited`,
+      'completed'
+    ]);
+    
+    // Send notification
+    await db.query(`
+      INSERT INTO notifications (user_id, title, message, is_read, type, created_at)
+      VALUES ($1, $2, $3, false, 'deposit', NOW())
+    `, [
+      deposit.user_id,
+      'Deposit Approved',
+      `Your deposit of $${deposit.amount} has been approved and credited to your wallet. New balance: $${newBalance.toFixed(2)}`
+    ]);
+    
+    // Log activity
+    await db.query(`
+      INSERT INTO activity_log (user_id, action, type, description, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+    `, [
+      deposit.user_id,
+      'deposit_approved',
+      'deposit',
+      `Deposit of $${deposit.amount} approved by admin`
+    ]);
+    
     await db.query('COMMIT');
-    req.flash('success', 'Deposit approved and credited to user');
+    
+    req.flash('success', `Deposit of $${deposit.amount} approved and credited to user`);
     res.redirect('/admin/deposits');
+    
   } catch (error) { 
     console.error('Approve deposit error:', error); 
     await db.query('ROLLBACK'); 
@@ -518,27 +564,86 @@ router.get('/withdrawals', async (req, res) => {
   }
 });
 
+// ==================== WITHDRAWAL APPROVE - FIXED ====================
 router.post('/withdrawal/:id/approve', async (req, res) => {
   try {
     const withdrawalId = req.params.id;
     const withdrawal = await db.get('SELECT * FROM withdrawals WHERE id = $1', [withdrawalId]);
+    
+    if (!withdrawal) {
+      req.flash('error', 'Withdrawal not found');
+      return res.redirect('/admin/withdrawals');
+    }
+    
     if (withdrawal.status !== 'pending') {
       req.flash('error', 'Withdrawal already processed');
       return res.redirect('/admin/withdrawals');
     }
+    
     const user = await db.get('SELECT balance FROM users WHERE id = $1', [withdrawal.user_id]);
-    if ((parseFloat(user.balance) || 0) < withdrawal.amount) {
+    const currentBalance = parseFloat(user.balance) || 0;
+    
+    if (currentBalance < withdrawal.amount) {
       req.flash('error', 'Insufficient balance');
       return res.redirect('/admin/withdrawals');
     }
-    const newBalance = (parseFloat(user.balance) || 0) - parseFloat(withdrawal.amount);
+    
+    const newBalance = currentBalance - parseFloat(withdrawal.amount);
+    
     await db.query('BEGIN');
-    await db.query('UPDATE withdrawals SET status = $1, processed_at = NOW() WHERE id = $2', ['completed', withdrawalId]);
-    await db.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, withdrawal.user_id]);
-    await db.query('INSERT INTO transactions (user_id, type, amount, balance_after, description, created_at) VALUES ($1, $2, $3, $4, $5, NOW())', [withdrawal.user_id, 'withdrawal', -withdrawal.amount, newBalance, 'Withdrawal processed']);
+    
+    // Update withdrawal status
+    await db.query(
+      'UPDATE withdrawals SET status = $1, processed_at = NOW() WHERE id = $2',
+      ['completed', withdrawalId]
+    );
+    
+    // Update user balance
+    await db.query(
+      'UPDATE users SET balance = $1 WHERE id = $2',
+      [newBalance, withdrawal.user_id]
+    );
+    
+    // Insert transaction with balance_after
+    await db.query(`
+      INSERT INTO transactions 
+      (user_id, type, amount, balance_after, description, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `, [
+      withdrawal.user_id,
+      'withdrawal',
+      -withdrawal.amount,
+      newBalance,
+      `Withdrawal processed - $${withdrawal.amount} debited`,
+      'completed'
+    ]);
+    
+    // Send notification
+    await db.query(`
+      INSERT INTO notifications (user_id, title, message, is_read, type, created_at)
+      VALUES ($1, $2, $3, false, 'withdrawal', NOW())
+    `, [
+      withdrawal.user_id,
+      'Withdrawal Processed',
+      `Your withdrawal of $${withdrawal.amount} has been processed. New balance: $${newBalance.toFixed(2)}`
+    ]);
+    
+    // Log activity
+    await db.query(`
+      INSERT INTO activity_log (user_id, action, type, description, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+    `, [
+      withdrawal.user_id,
+      'withdrawal_approved',
+      'withdrawal',
+      `Withdrawal of $${withdrawal.amount} approved by admin`
+    ]);
+    
     await db.query('COMMIT');
-    req.flash('success', 'Withdrawal approved');
+    
+    req.flash('success', `Withdrawal of $${withdrawal.amount} approved`);
     res.redirect('/admin/withdrawals');
+    
   } catch (error) { 
     console.error('Approve withdrawal error:', error); 
     await db.query('ROLLBACK'); 
