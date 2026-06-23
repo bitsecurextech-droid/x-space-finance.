@@ -195,6 +195,13 @@ router.post('/user/:id/realized', async (req, res) => {
       VALUES (?, 'realized', ?, ?, datetime('now'))
     `, [userId, delta, reason || 'Admin adjusted realized']);
     
+    // ✅ ADD NOTIFICATION FOR USER
+    const sign = delta >= 0 ? '+' : '';
+    await db.run(`
+      INSERT INTO notifications (user_id, title, message, is_read, type, created_at)
+      VALUES (?, 'Realized Updated', ?, 0, 'realized', CURRENT_TIMESTAMP)
+    `, [userId, `Your realized balance has been adjusted by ${sign}$${Math.abs(delta).toFixed(2)}. Reason: ${reason || 'Admin adjustment'}`]);
+    
     res.json({ success: true, newRealized });
   } catch (error) {
     console.error('Update realized error:', error);
@@ -351,7 +358,7 @@ router.post('/user/:id/reset-password', async (req, res) => {
   }
 });
 
-// ==================== DELETE USER (POST) ====================
+// ==================== DELETE USER ====================
 router.post('/user/:id/delete', async (req, res) => {
   try {
     const userId = req.params.id;
@@ -688,7 +695,7 @@ router.get('/files', async (req, res) => {
   }
 });
 
-// ==================== DELETE FILE (POST) ====================
+// ==================== DELETE FILE ====================
 router.post('/files/delete', async (req, res) => {
   try {
     const { filePath, fileName, type } = req.body;
